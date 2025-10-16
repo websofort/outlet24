@@ -45,7 +45,7 @@ class ScrapeOutlet46Products extends Command
         $batches = array_chunk($links, $batchSize);
 
         foreach ($batches as $batchLinks) {
-            $this->processBatchProducts($batchLinks, 'Children');
+            $this->processBatchProducts($batchLinks, 'Men');
         }
     }
 
@@ -57,14 +57,14 @@ class ScrapeOutlet46Products extends Command
         $batches = array_chunk($links, $batchSize);
 
         foreach ($batches as $batchLinks) {
-            $this->processBatchProducts($batchLinks, 'Children');
+            $this->processBatchProducts($batchLinks, 'Women');
         }
     }
 
 
     public function scrapeKidsProductLinks()
     {
-        $links = $this->scrapeByFacet(728, 'Kids');
+        $links = $this->scrapeByFacet(728, 'Children');
 
         $batchSize = 50;
         $batches = array_chunk($links, $batchSize);
