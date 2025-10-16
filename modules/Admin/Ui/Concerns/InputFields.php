@@ -83,27 +83,47 @@ trait InputFields
         $readonly = array_pull($options, 'readonly', false);
 
         $html = "<select
-            name='{$name}'
-            class='form-control custom-select-black {$class}'
-            id='{$name}'
-            {$attributes}"
-            . ($disabled ? 'disabled' : '')
-            . ($readonly ? 'readonly ' : '') .
+        name='{$name}'
+        class='form-control custom-select-black {$class}'
+        id='{$name}'
+        {$attributes}" .
+            ($disabled ? 'disabled' : '') .
+            ($readonly ? 'readonly ' : '') .
             '>';
 
         foreach ($list as $listValue => $listName) {
-            $listValue = e($listValue);
-            $listName = e($listName);
-
-            if ($multiple && $value instanceof Collection) {
+            if ($multiple && $value instanceof \Illuminate\Support\Collection) {
                 $selected = $value->where('id', $listValue)->isNotEmpty() ? 'selected' : '';
-            } else if ($multiple && is_array($value)) {
-                $selected = in_array($listValue, $value) ? 'selected' : '';
+            } elseif ($multiple && is_array($value)) {
+                $selected = in_array($listValue, $value, true) ? 'selected' : '';
             } else {
                 $selected = (!is_null($value) && $value == $listValue) ? 'selected' : '';
             }
 
-            $html .= "<option value='{$listValue}' {$selected}>{$listName}</option>";
+            $listValueStr = is_scalar($listValue)
+                ? (string) $listValue
+                : (is_object($listValue) && method_exists($listValue, '__toString') ? (string) $listValue : json_encode($listValue));
+
+            $listValueEsc = e($listValueStr);
+
+            if ($listName instanceof \Illuminate\Support\HtmlString) {
+                $listNameOut = (string) $listName;
+            } else {
+                if (is_array($listName)) {
+                    $label = $listName['label'] ?? $listName['text'] ?? reset($listName) ?? '';
+                    $listNameStr = is_scalar($label)
+                        ? (string) $label
+                        : (is_object($label) && method_exists($label, '__toString') ? (string) $label : '');
+                } elseif (is_object($listName) && method_exists($listName, '__toString')) {
+                    $listNameStr = (string) $listName;
+                } else {
+                    $listNameStr = (string) $listName;
+                }
+
+                $listNameOut = e($listNameStr);
+            }
+
+            $html .= "<option value='{$listValueEsc}' {$selected}>{$listNameOut}</option>";
         }
 
         $html .= '</select>';
