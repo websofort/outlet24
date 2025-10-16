@@ -8,6 +8,9 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Modules\Attribute\Entities\Attribute;
+use Modules\Attribute\Entities\AttributeSet;
+use Modules\Attribute\Entities\AttributeValue;
 use Symfony\Component\DomCrawler\Crawler;
 use Modules\Brand\Entities\Brand;
 use Modules\Media\Entities\File;
@@ -31,6 +34,10 @@ class ScrapeOutlet46Brands extends Command
             $this->error("Failed to load page: HTTP ".$res->status());
             return self::FAILURE;
         }
+
+        $existingAttributeSets = AttributeSet::with('translations')->get()->keyBy('id');
+        $existingAttributes = Attribute::with('translations')->get()->keyBy('id');
+        $existingAttributeValues = AttributeValue::with('translations')->get()->keyBy('id');
 
         $html = $res->body();
         $brands = $this->extractBrands($html);
@@ -58,22 +65,26 @@ class ScrapeOutlet46Brands extends Command
                     $this->attachLogo($brand, $brandData['image'], $brandData['name']);
                 }
 
-                DB::commit();
+                $this->createBrandAttribute(
+                    $brand,
+                    $existingAttributeSets,
+                    $existingAttributes,
+                    $existingAttributeValues
+                );
 
+                DB::commit();
 
             } catch (\Exception $e) {
                 DB::rollBack();
                 $this->error('Failed to process brand: ' . $brandData['name']);
                 $this->error($e->getMessage());
             }
-
         }
 
         \Cache::tags('brands')->flush();
 
         return self::SUCCESS;
     }
-
     private function extractBrands(string $html): array
     {
         $crawler = new Crawler($html);
@@ -167,5 +178,57 @@ class ScrapeOutlet46Brands extends Command
         } catch (\Exception $e) {
             Log::error('Failed to attach logo: ' . $e->getMessage());
         }
+    }
+
+    private function createBrandAttribute(
+        Brand $brand,
+              $existingAttributeSets,
+              $existingAttributes,
+              $existingAttributeValues
+    ) {
+        $brandLabel = 'Brand';
+        $brandName = $brand->translate('en')->name ?? $brand->name;
+
+        $brandAttributeSet = $existingAttributeSets->first(function ($item) use ($brandLabel) {
+            return strcasecmp($item->translate('en')->name ?? '', $brandLabel) === 0;
+        });
+
+        if (!$brandAttributeSet) {
+            $brandAttributeSet = new AttributeSet();
+            $brandAttributeSet->name = $brandLabel;
+            $brandAttributeSet->save();
+            $existingAttributeSets->put($brandLabel, $brandAttributeSet);
+        }
+
+        $brandAttribute = $existingAttributes->first(function ($item) use ($brandLabel) {
+            return strcasecmp($item->translate('en')->name ?? '', $brandLabel) === 0;
+        });
+
+        if (!$brandAttribute) {
+            $brandAttribute = new Attribute();
+            $brandAttribute->attribute_set_id = $brandAttributeSet->id;
+            $brandAttribute->is_filterable = true;
+            $brandAttribute->name = $brandLabel;
+            $brandAttribute->save();
+            $existingAttributes->put($brandLabel, $brandAttribute);
+        }
+
+        $brandAttributeValue = $existingAttributeValues->first(function ($item) use ($brandName) {
+            return strcasecmp($item->translate('en')->value ?? '', $brandName) === 0;
+        });
+
+        if (!$brandAttributeValue) {
+            $brandAttributeValue = new AttributeValue();
+            $brandAttributeValue->attribute_id = $brandAttribute->id;
+            $brandAttributeValue->position = 1;
+            $brandAttributeValue->value = $brandName;
+            $brandAttributeValue->save();
+            $existingAttributeValues->put($brandName, $brandAttributeValue);
+        }
+
+        return [
+            'attribute_id' => $brandAttribute->id,
+            'value_id' => $brandAttributeValue->id
+        ];
     }
 }

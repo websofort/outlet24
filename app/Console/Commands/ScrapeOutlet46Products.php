@@ -3,9 +3,11 @@
 namespace FleetCart\Console\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Modules\Attribute\Entities\Attribute;
 use Modules\Attribute\Entities\AttributeSet;
 use Modules\Attribute\Entities\AttributeValue;
@@ -79,7 +81,6 @@ class ScrapeOutlet46Products extends Command
 
         do {
             $url = self::BASE_URL . "/en/All-Articles/?facets={$facetId}&page={$page}";
-            $this->info("Scraping {$category} page {$page}: {$url}");
 
             $links = $this->extractProductLinks($url);
 
@@ -125,7 +126,6 @@ class ScrapeOutlet46Products extends Command
                 return $link;
             }, $links);
 
-            $this->info('Found ' . count($links) . ' products on this page');
 
             return $links;
 
@@ -600,6 +600,8 @@ class ScrapeOutlet46Products extends Command
         $allCategoryNames = [];
         $allAttributeNames = [];
         $allAttributeValues = [];
+        $allSizeValues = [];
+        $allColorValues = [];
 
         foreach ($productsData as $productData) {
             if (!empty($productData['categories'])) {
@@ -614,6 +616,12 @@ class ScrapeOutlet46Products extends Command
                     if (is_array($attrValues)) {
                         foreach ($attrValues as $val) {
                             $allAttributeValues[] = ucfirst($val['value']);
+
+                            if (strtolower($attrName) === 'size') {
+                                $allSizeValues[] = ucfirst($val['value']);
+                            } elseif (strtolower($attrName) === 'color') {
+                                $allColorValues[] = ucfirst($val['value']);
+                            }
                         }
                     }
                 }
@@ -622,11 +630,19 @@ class ScrapeOutlet46Products extends Command
 
         $allAttributeNames[] = 'Gender';
         $allAttributeValues[] = ucfirst($gender);
+        $allAttributeNames[] = 'Brand';
+        foreach ($allBrandNames as $brandName) {
+            if (!empty($brandName)) {
+                $allAttributeValues[] = ucfirst($brandName);
+            }
+        }
         $allCategoryNames[] = $gender;
 
         $allCategoryNames = array_unique($allCategoryNames);
         $allAttributeNames = array_unique($allAttributeNames);
         $allAttributeValues = array_unique($allAttributeValues);
+        $allSizeValues = array_unique($allSizeValues);
+        $allColorValues = array_unique($allColorValues);
 
         $locale = 'en';
 
@@ -685,8 +701,64 @@ class ScrapeOutlet46Products extends Command
             return $item->translate($locale)->value ?? '';
         });
 
+        $existingVariations = collect();
+        if (!empty($allSizeValues) || !empty($allColorValues)) {
+            $variationNames = [];
+            if (!empty($allSizeValues)) $variationNames[] = 'Size';
+            if (!empty($allColorValues)) $variationNames[] = 'Color';
+
+            $existingVariations = DB::table('variations')
+                ->join('variation_translations', 'variations.id', '=', 'variation_translations.variation_id')
+                ->whereIn('variation_translations.name', $variationNames)
+                ->where('variation_translations.locale', $locale)
+                ->where('variations.is_global', false)
+                ->select('variations.*', 'variation_translations.name as variation_name')
+                ->get()
+                ->keyBy('variation_name');
+        }
+
+        $existingVariationValues = collect();
+        if (!empty($allSizeValues) || !empty($allColorValues)) {
+            $allVariationValues = array_merge($allSizeValues, $allColorValues);
+
+            $variationValuesCollection = DB::table('variation_values')
+                ->join('variation_value_translations', 'variation_values.id', '=', 'variation_value_translations.variation_value_id')
+                ->whereIn('variation_value_translations.label', $allVariationValues)
+                ->where('variation_value_translations.locale', $locale)
+                ->select('variation_values.*', 'variation_value_translations.label')
+                ->get();
+
+            foreach ($variationValuesCollection as $vv) {
+                $key = $vv->variation_id . '|' . $vv->label;
+                $existingVariationValues->put($key, $vv);
+            }
+        }
+
+        $existingVariants = collect();
+        if ($existingProducts->isNotEmpty()) {
+            $variantsCollection = DB::table('product_variants')
+                ->whereIn('product_id', $existingProducts->pluck('id'))
+                ->get();
+
+            foreach ($variantsCollection as $variant) {
+                $existingVariants->put($variant->sku, $variant);
+            }
+        }
+
+        $existingProductVariations = collect();
+        if ($existingProducts->isNotEmpty()) {
+            $productVariationsCollection = DB::table('product_variations')
+                ->whereIn('product_id', $existingProducts->pluck('id'))
+                ->get();
+
+            foreach ($productVariationsCollection as $pv) {
+                $key = $pv->product_id . '|' . $pv->variation_id;
+                $existingProductVariations->put($key, $pv);
+            }
+        }
+
         foreach ($productsData as $productData) {
-            $this->createProductOptimized(
+            $this->createProduct(
                 $productData,
                 $gender,
                 $existingProducts,
@@ -694,12 +766,15 @@ class ScrapeOutlet46Products extends Command
                 $categoriesByNameAndParent,
                 $existingAttributeSets,
                 $existingAttributes,
-                $existingAttributeValues
+                $existingAttributeValues,
+                $existingVariations,
+                $existingVariationValues,
+                $existingVariants,
+                $existingProductVariations
             );
         }
     }
-
-    private function createProductOptimized(
+    private function createProduct(
         array $productData,
         string $gender,
         $existingProducts,
@@ -707,21 +782,26 @@ class ScrapeOutlet46Products extends Command
         $categoriesByNameAndParent,
         $existingAttributeSets,
         $existingAttributes,
-        $existingAttributeValues
+        $existingAttributeValues,
+        $existingVariations,
+        $existingVariationValues,
+        $existingVariants,
+        $existingProductVariations
     ) {
 
-        $categoryIds = $this->createCategoryOptimized(
+        $categoryIds = $this->createCategory(
             $productData['categories'],
             $gender,
             $categoriesByNameAndParent
         );
 
-        $attributeIds = $this->createAttributeOptimized(
+        $attributeIds = $this->createAttribute(
             $productData['attributes'],
             $productData['gender'],
             $existingAttributeSets,
             $existingAttributes,
-            $existingAttributeValues
+            $existingAttributeValues,
+            $productData['brand'] ?? null
         );
 
         $brand = $existingBrands->get($productData['brand']);
@@ -731,9 +811,6 @@ class ScrapeOutlet46Products extends Command
 
         if (!$product) {
             $product = new Product();
-            $this->info("Creating product: " . $productData['name']);
-        } else {
-            $this->info("Updating product: " . $productData['name']);
         }
 
         $product->name = $productData['name'];
@@ -807,8 +884,276 @@ class ScrapeOutlet46Products extends Command
 
         $product->categories()->sync($categoryIds);
         $this->attachImages($product->id, $productData['images']);
+
+        if (!empty($productData['attributes'])) {
+            $sizeValues = [];
+            $colorValues = [];
+
+            foreach ($productData['attributes'] as $attrName => $attrValues) {
+                if (strtolower($attrName) === 'size' && is_array($attrValues)) {
+                    $sizeValues = $attrValues;
+                } elseif (strtolower($attrName) === 'color' && is_array($attrValues)) {
+                    $colorValues = $attrValues;
+                }
+            }
+
+
+            $variationIds = [];
+
+            if (!empty($sizeValues)) {
+                $sizeVariationId = $this->createProductVariation('Size', $product->id);
+                $variationIds['size'] = $sizeVariationId;
+
+                foreach ($sizeValues as $sizeData) {
+                    $valueId = $this->createProductVariationValue(
+                        $sizeData['value'],
+                        $sizeVariationId
+                    );
+                }
+            }
+
+            if (!empty($colorValues)) {
+                $colorVariationId = $this->createProductVariation('Color', $product->id);
+                $variationIds['color'] = $colorVariationId;
+
+                foreach ($colorValues as $colorData) {
+                    $valueId = $this->createProductVariationValue(
+                        $colorData['value'],
+                        $colorVariationId
+                    );
+                }
+            }
+
+            if (!empty($sizeValues) && !empty($colorValues)) {
+                foreach ($sizeValues as $sizeData) {
+                    foreach ($colorValues as $colorData) {
+                        $sizeValue = $sizeData['value'];
+                        $colorValue = $colorData['value'];
+                        $available = ($sizeData['available'] ?? true) && ($colorData['available'] ?? true);
+
+                        $sizeVariationValueId = $this->getVariationValueId($sizeValue, $variationIds['size']);
+                        $colorVariationValueId = $this->getVariationValueId($colorValue, $variationIds['color']);
+
+                        if (!$sizeVariationValueId || !$colorVariationValueId) {
+                            $this->error("Missing variation value IDs for {$sizeValue} or {$colorValue}");
+                            continue;
+                        }
+
+                        $combinedName = "{$sizeValue} - {$colorValue}";
+
+                        $this->createProductVariant(
+                            $product->id,
+                            $combinedName,
+                            $available,
+                            [$sizeVariationValueId, $colorVariationValueId],
+                            $productData['price'],
+                            $productData['special_price'],
+                            $productData['price_valid_until'],
+                            $product->sku,
+                            $existingVariants
+                        );
+                    }
+                }
+            } elseif (!empty($sizeValues)) {
+                foreach ($sizeValues as $sizeData) {
+                    $sizeValue = $sizeData['value'];
+                    $available = $sizeData['available'] ?? true;
+
+                    $sizeVariationValueId = $this->getVariationValueId($sizeValue, $variationIds['size']);
+
+                    if (!$sizeVariationValueId) {
+                        $this->error("Missing variation value ID for {$sizeValue}");
+                        continue;
+                    }
+
+                    $this->createProductVariant(
+                        $product->id,
+                        $sizeValue,
+                        $available,
+                        [$sizeVariationValueId],
+                        $productData['price'],
+                        $productData['special_price'],
+                        $productData['price_valid_until'],
+                        $product->sku,
+                        $existingVariants
+                    );
+                }
+            } elseif (!empty($colorValues)) {
+                foreach ($colorValues as $colorData) {
+                    $colorValue = $colorData['value'];
+                    $available = $colorData['available'] ?? true;
+
+                    $colorVariationValueId = $this->getVariationValueId($colorValue, $variationIds['color']);
+
+                    if (!$colorVariationValueId) {
+                        $this->error("Missing variation value ID for {$colorValue}");
+                        continue;
+                    }
+
+                    $this->createProductVariant(
+                        $product->id,
+                        $colorValue,
+                        $available,
+                        [$colorVariationValueId],
+                        $productData['price'],
+                        $productData['special_price'],
+                        $productData['price_valid_until'],
+                        $product->sku,
+                        $existingVariants
+                    );
+                }
+            }
+        }
     }
 
+    protected function createProductVariation($variationType, $productId)
+    {
+        $variationId = DB::table('variations')->insertGetId([
+            'uid' => Str::uuid(),
+            'type' => 'text',
+            'is_global' => false,
+            'position' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('variation_translations')->insert([
+            'variation_id' => $variationId,
+            'locale' => 'en',
+            'name' => $variationType,
+        ]);
+
+
+        DB::table('product_variations')->insert([
+            'product_id' => $productId,
+            'variation_id' => $variationId,
+        ]);
+
+        return $variationId;
+    }
+
+    protected function createProductVariationValue($label, $variationId)
+    {
+        $position = DB::table('variation_values')
+                ->where('variation_id', $variationId)
+                ->count() + 1;
+
+        $variationValueId = DB::table('variation_values')->insertGetId([
+            'uid' => Str::uuid(),
+            'variation_id' => $variationId,
+            'value' => $label,
+            'position' => $position,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('variation_value_translations')->insert([
+            'variation_value_id' => $variationValueId,
+            'locale' => 'en',
+            'label' => $label,
+        ]);
+
+        return $variationValueId;
+    }
+
+    protected function getVariationValueId($label, $variationId)
+    {
+        return DB::table('variation_values')
+            ->join('variation_value_translations', 'variation_values.id', '=', 'variation_value_translations.variation_value_id')
+            ->where('variation_values.variation_id', $variationId)
+            ->where('variation_value_translations.label', $label)
+            ->where('variation_value_translations.locale', 'en')
+            ->value('variation_values.id');
+    }
+
+    protected function createProductVariant($productId, $name, $available, $variationValueIds, $price, $specialPrice, $specialPriceEnd, $baseSku, $existingVariants)
+    {
+        $skuSuffix = str_replace([' ', '.', '/', '-'], ['_', '_', '_', '_'], $name);
+        $variantSku = $baseSku . '_' . $skuSuffix;
+
+        $variant = $existingVariants->get($variantSku);
+        if ($variant) {
+            return $variant->id;
+        }
+
+        $dbVariant = DB::table('product_variants')
+            ->where('product_id', $productId)
+            ->where('sku', $variantSku)
+            ->first();
+
+        if ($dbVariant) {
+            $existingVariants->put($variantSku, $dbVariant);
+            return $dbVariant->id;
+        }
+
+        $variationValueUids = DB::table('variation_values')
+            ->whereIn('id', $variationValueIds)
+            ->pluck('uid')
+            ->toArray();
+
+        if (empty($variationValueUids)) {
+            $this->error("No variation value UIDs found for IDs: " . implode(',', $variationValueIds));
+            return null;
+        }
+
+        $uids = implode(',', $variationValueUids);
+
+        $dbVariantCount = DB::table('product_variants')
+            ->where('product_id', $productId)
+            ->count();
+
+        $memoryVariantCount = $existingVariants->filter(function($item) use ($productId) {
+            return $item->product_id == $productId;
+        })->count();
+
+        $existingVariantCount = max($dbVariantCount, $memoryVariantCount);
+
+        $isDefault = ($existingVariantCount === 0);
+        $position = $existingVariantCount + 1;
+
+        try {
+            $variantId = DB::table('product_variants')->insertGetId([
+                'uid' => Str::uuid(),
+                'uids' => $uids,
+                'product_id' => $productId,
+                'name' => $name,
+                'price' => $price,
+                'special_price' => $specialPrice,
+                'special_price_type' => $specialPrice ? 'fixed' : null,
+                'special_price_start' => $specialPrice ? now() : null,
+                'special_price_end' => $specialPrice ? $specialPriceEnd : null,
+                'selling_price' => $specialPrice ?: $price,
+                'sku' => $variantSku,
+                'manage_stock' => false,
+                'qty' => 0,
+                'in_stock' => $available,
+                'is_default' => $isDefault,
+                'is_active' => true,
+                'position' => $position,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            $newVariant = (object)[
+                'id' => $variantId,
+                'product_id' => $productId,
+                'sku' => $variantSku,
+            ];
+            $existingVariants->put($variantSku, $newVariant);
+
+            return $variantId;
+
+        } catch (\Exception $e) {
+            $this->error("Error creating variant: " . $e->getMessage());
+            Log::error("Variant creation failed", [
+                'product_id' => $productId,
+                'sku' => $variantSku,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return null;
+        }
+    }
     private function getCategoryWithAllChildren($categoryId)
     {
         $ids = collect([$categoryId]);
@@ -822,12 +1167,13 @@ class ScrapeOutlet46Products extends Command
         return $ids;
     }
 
-    private function createAttributeOptimized(
+    private function createAttribute(
         array $attributes,
         string $gender,
         $existingAttributeSets,
         $existingAttributes,
-        $existingAttributeValues
+        $existingAttributeValues,
+        string $brandName = null
     ) {
         $attributeIds = collect();
 
@@ -931,10 +1277,54 @@ class ScrapeOutlet46Products extends Command
 
         $attributeIds->put($genderAttribute->id, [$genderValue => $genderAttributeVal->id]);
 
+        if (!empty($brandName)) {
+            $brandLabel = 'Brand';
+            $brandValue = ucfirst($brandName);
+
+            $brandAttributeSet = $existingAttributeSets->first(function ($item) use ($brandLabel) {
+                return strcasecmp($item->translate('en')->name ?? '', $brandLabel) === 0;
+            });
+
+            if (!$brandAttributeSet) {
+                $brandAttributeSet = new AttributeSet();
+                $brandAttributeSet->name = $brandLabel;
+                $brandAttributeSet->save();
+                $existingAttributeSets->put($brandLabel, $brandAttributeSet);
+            }
+
+            $brandAttribute = $existingAttributes->first(function ($item) use ($brandLabel) {
+                return strcasecmp($item->translate('en')->name ?? '', $brandLabel) === 0;
+            });
+
+            if (!$brandAttribute) {
+                $brandAttribute = new Attribute();
+                $brandAttribute->attribute_set_id = $brandAttributeSet->id;
+                $brandAttribute->is_filterable = true;
+                $brandAttribute->name = $brandLabel;
+                $brandAttribute->save();
+                $existingAttributes->put($brandLabel, $brandAttribute);
+            }
+
+            $brandAttributeVal = $existingAttributeValues->first(function ($item) use ($brandValue) {
+                return strcasecmp($item->translate('en')->value ?? '', $brandValue) === 0;
+            });
+
+            if (!$brandAttributeVal) {
+                $brandAttributeVal = new AttributeValue();
+                $brandAttributeVal->attribute_id = $brandAttribute->id;
+                $brandAttributeVal->position = 1;
+                $brandAttributeVal->value = $brandValue;
+                $brandAttributeVal->save();
+                $existingAttributeValues->put($brandValue, $brandAttributeVal);
+            }
+
+            $attributeIds->put($brandAttribute->id, [$brandValue => $brandAttributeVal->id]);
+        }
+
         return $attributeIds;
     }
 
-    private function createCategoryOptimized(
+    private function createCategory(
         array $categories,
         string $gender,
         $categoriesByNameAndParent

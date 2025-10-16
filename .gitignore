@@ -37,3 +37,4 @@ vite.config.js.*
 *.lock
 composer.lock
 yarn.lock
+/public/storage/media
