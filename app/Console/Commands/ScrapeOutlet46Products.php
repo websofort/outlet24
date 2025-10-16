@@ -851,6 +851,7 @@ class ScrapeOutlet46Products extends Command
 
         $productAttributeValuesToInsert = [];
         $newProductAttributeIds = [];
+        $insertedCombinations = [];
 
         foreach ($attributeIds as $attributeId => $valueMap) {
             $productAttribute = $existingProductAttributes->get($attributeId);
@@ -862,6 +863,7 @@ class ScrapeOutlet46Products extends Command
                 $productAttribute->save();
 
                 $newProductAttributeIds[$attributeId] = $productAttribute->id;
+                $existingProductAttributes->put($attributeId, $productAttribute);
             }
 
             $productAttributeId = $productAttribute->id ?? $newProductAttributeIds[$attributeId];
@@ -869,11 +871,14 @@ class ScrapeOutlet46Products extends Command
             $existingValueIds = $existingValues->pluck('attribute_value_id')->toArray();
 
             foreach ($valueMap as $value => $attributeValueId) {
-                if (!in_array($attributeValueId, $existingValueIds)) {
+                $combinationKey = $productAttributeId . '-' . $attributeValueId;
+
+                if (!in_array($attributeValueId, $existingValueIds) && !isset($insertedCombinations[$combinationKey])) {
                     $productAttributeValuesToInsert[] = [
                         'product_attribute_id' => $productAttributeId,
                         'attribute_value_id' => $attributeValueId,
                     ];
+                    $insertedCombinations[$combinationKey] = true;
                 }
             }
         }
@@ -882,7 +887,7 @@ class ScrapeOutlet46Products extends Command
             ProductAttributeValue::insert($productAttributeValuesToInsert);
         }
 
-        $product->categories()->sync($categoryIds);
+        $product->categories()->sync($categoryIds->unique()->values()->toArray());
         $this->attachImages($product->id, $productData['images']);
 
         if (!empty($productData['attributes'])) {
@@ -1068,6 +1073,8 @@ class ScrapeOutlet46Products extends Command
 
     protected function createProductVariant($productId, $name, $available, $variationValueIds, $price, $specialPrice, $specialPriceEnd, $baseSku, $existingVariants)
     {
+        $variationValueIds = array_unique($variationValueIds);
+
         $skuSuffix = str_replace([' ', '.', '/', '-'], ['_', '_', '_', '_'], $name);
         $variantSku = $baseSku . '_' . $skuSuffix;
 
