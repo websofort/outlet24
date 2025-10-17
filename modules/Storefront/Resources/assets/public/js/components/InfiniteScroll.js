@@ -88,14 +88,16 @@ export default (parentComponent = 'ProductIndex') => ({
             if (!productsContainer) return;
 
             const containerRect = productsContainer.getBoundingClientRect();
-
-            const isVisible = containerRect.top < window.innerHeight && containerRect.bottom > 0;
-            if (!isVisible) return;
-
-            const containerBottom = containerRect.bottom;
             const viewportHeight = window.innerHeight;
 
-            if (containerBottom <= viewportHeight + this.threshold) {
+            const products = productsContainer.querySelectorAll('[wire\\:key], [x-data]');
+            const lastProduct = products[products.length - 1];
+
+            if (!lastProduct) return;
+
+            const lastProductRect = lastProduct.getBoundingClientRect();
+
+            if (lastProductRect.bottom <= viewportHeight + this.threshold) {
                 this.loadMore();
             }
         };
@@ -144,7 +146,12 @@ export default (parentComponent = 'ProductIndex') => ({
             attempts < this._maxPrefetch &&
             this.hasMoreProducts &&
             !this.isLoadingMore &&
-            (productsContainer.getBoundingClientRect().bottom <= window.innerHeight + this.threshold)
+            (() => {
+                const products = productsContainer.querySelectorAll('[wire\\:key], [x-data]');
+                const lastProduct = products[products.length - 1];
+                if (!lastProduct) return false;
+                return lastProduct.getBoundingClientRect().bottom <= window.innerHeight + this.threshold;
+            })()
             ) {
             await this.loadMore();
             await new Promise(r => requestAnimationFrame(r));
@@ -186,16 +193,6 @@ export default (parentComponent = 'ProductIndex') => ({
             if (error?.response?.data?.message) notify(error.response.data.message);
         } finally {
             this.isLoadingMore = false;
-        }
-        await this.$nextTick();
-        const productsContainer = document.querySelector('.search-result-middle');
-        if (productsContainer) {
-            const containerRect = productsContainer.getBoundingClientRect();
-            const isOutOfView = containerRect.bottom < 0;
-
-            if (isOutOfView && this.hasMoreProducts) {
-                productsContainer.scrollIntoView({ behavior: 'smooth', block: 'end' });
-            }
         }
     },
 
