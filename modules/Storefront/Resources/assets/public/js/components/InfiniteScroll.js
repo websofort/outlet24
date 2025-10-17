@@ -84,12 +84,15 @@ export default (parentComponent = 'ProductIndex') => ({
         this.scrollHandler = () => {
             if (this.isLoadingMore || !this.hasMoreProducts || !this.enabled) return;
 
-            const doc = document.scrollingElement || document.documentElement;
-            const scrollHeight = doc.scrollHeight;
-            const scrollTop = doc.scrollTop;
-            const clientHeight = doc.clientHeight;
 
-            if (scrollTop + clientHeight >= scrollHeight - this.threshold) {
+            const productsContainer = document.querySelector('.search-result-middle');
+            if (!productsContainer) return;
+
+            const containerRect = productsContainer.getBoundingClientRect();
+            const containerBottom = containerRect.bottom;
+            const viewportHeight = window.innerHeight;
+
+            if (containerBottom <= viewportHeight + this.threshold) {
                 this.loadMore();
             }
         };
@@ -131,13 +134,14 @@ export default (parentComponent = 'ProductIndex') => ({
 
     async fillIfShort() {
         let attempts = 0;
-        const doc = document.scrollingElement || document.documentElement;
+        const productsContainer = document.querySelector('.search-result-middle');
+        if (!productsContainer) return;
 
         while (
             attempts < this._maxPrefetch &&
             this.hasMoreProducts &&
             !this.isLoadingMore &&
-            (doc.scrollHeight <= doc.clientHeight + this.threshold)
+            (productsContainer.getBoundingClientRect().bottom <= window.innerHeight + this.threshold)
             ) {
             await this.loadMore();
             await new Promise(r => requestAnimationFrame(r));
