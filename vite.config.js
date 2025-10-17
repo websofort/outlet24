@@ -57,13 +57,17 @@ export default defineConfig(async ({ command }) => {
                             "node_modules/jstree/dist/jstree.min.js",
                             "modules/Admin/Resources/assets/images/*",
                             "modules/Admin/Resources/assets/vendors/js/bootstrap.min.js",
-                            "modules/Storefront/Resources/assets/public/images/*",
+
                         ],
                         dest: "public/build/assets",
                     },
                     {
                         src: "modules/Admin/Resources/assets/fonts",
                         dest: "public/build",
+                    },
+                    {
+                        src: "modules/Storefront/Resources/assets/public/images/*",
+                        dest: "public/build/assets/images",
                     },
                     {
                         src: "node_modules/line-awesome/dist/line-awesome/fonts",
