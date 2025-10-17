@@ -84,11 +84,14 @@ export default (parentComponent = 'ProductIndex') => ({
         this.scrollHandler = () => {
             if (this.isLoadingMore || !this.hasMoreProducts || !this.enabled) return;
 
-
             const productsContainer = document.querySelector('.search-result-middle');
             if (!productsContainer) return;
 
             const containerRect = productsContainer.getBoundingClientRect();
+
+            const isVisible = containerRect.top < window.innerHeight && containerRect.bottom > 0;
+            if (!isVisible) return;
+
             const containerBottom = containerRect.bottom;
             const viewportHeight = window.innerHeight;
 
@@ -183,6 +186,16 @@ export default (parentComponent = 'ProductIndex') => ({
             if (error?.response?.data?.message) notify(error.response.data.message);
         } finally {
             this.isLoadingMore = false;
+        }
+        await this.$nextTick();
+        const productsContainer = document.querySelector('.search-result-middle');
+        if (productsContainer) {
+            const containerRect = productsContainer.getBoundingClientRect();
+            const isOutOfView = containerRect.bottom < 0;
+
+            if (isOutOfView && this.hasMoreProducts) {
+                productsContainer.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            }
         }
     },
 
