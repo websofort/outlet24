@@ -90,14 +90,19 @@ export default (parentComponent = 'ProductIndex') => ({
             const containerRect = productsContainer.getBoundingClientRect();
             const viewportHeight = window.innerHeight;
 
-            const products = productsContainer.querySelectorAll('[wire\\:key], [x-data]');
+            if (containerRect.bottom < 0) return;
+
+            if (containerRect.top > viewportHeight) return;
+
+            const productSelector = '.grid-view-products-item, .list-view-products-item';
+            const products = productsContainer.querySelectorAll(productSelector);
+
+            if (products.length === 0) return;
+
             const lastProduct = products[products.length - 1];
-
-            if (!lastProduct) return;
-
             const lastProductRect = lastProduct.getBoundingClientRect();
 
-            if (lastProductRect.bottom <= viewportHeight + this.threshold) {
+            if (lastProductRect.top <= viewportHeight + this.threshold) {
                 this.loadMore();
             }
         };
@@ -142,17 +147,17 @@ export default (parentComponent = 'ProductIndex') => ({
         const productsContainer = document.querySelector('.search-result-middle');
         if (!productsContainer) return;
 
-        while (
-            attempts < this._maxPrefetch &&
-            this.hasMoreProducts &&
-            !this.isLoadingMore &&
-            (() => {
-                const products = productsContainer.querySelectorAll('[wire\\:key], [x-data]');
-                const lastProduct = products[products.length - 1];
-                if (!lastProduct) return false;
-                return lastProduct.getBoundingClientRect().bottom <= window.innerHeight + this.threshold;
-            })()
-            ) {
+        const productSelector = '.grid-view-products-item, .list-view-products-item';
+
+        while (attempts < this._maxPrefetch && this.hasMoreProducts && !this.isLoadingMore) {
+            const products = productsContainer.querySelectorAll(productSelector);
+            if (products.length === 0) break;
+
+            const lastProduct = products[products.length - 1];
+            const lastProductRect = lastProduct.getBoundingClientRect();
+
+            if (lastProductRect.top > window.innerHeight + this.threshold) break;
+
             await this.loadMore();
             await new Promise(r => requestAnimationFrame(r));
             attempts++;
