@@ -72,6 +72,7 @@ class Product extends Model implements Sitemapable
         'is_active',
         'new_from',
         'new_to',
+        'product_url'
     ];
 
     /**

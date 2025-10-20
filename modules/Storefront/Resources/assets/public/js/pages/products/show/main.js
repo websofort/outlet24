@@ -602,7 +602,6 @@ Alpine.data("ProductShow", ({ product, variant, reviewCount, avgRating }) => ({
 
     setVariant() {
         const selectedUids = Object.values(this.cartItemForm.variations)
-            .sort()
             .join(".");
 
         const variant = this.product.variants.find(

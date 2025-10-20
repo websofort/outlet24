@@ -4,12 +4,12 @@
             <div class="col-lg-18">
                 <label class="d-flex">
                     {{ $variation->name }}:
-                    
+
                     <span class="d-flex variation-label" x-text="activeVariationValues['{{ $variation->uid }}']"></span>
                 </label>
             </div>
 
-            <div class="col-lg-18">               
+            <div class="col-lg-18">
                 <ul class="list-inline form-custom-radio custom-selection">
                     @foreach ($variation->values as $value)
                         <li
