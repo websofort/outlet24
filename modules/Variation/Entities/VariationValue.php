@@ -24,7 +24,7 @@ class VariationValue extends Model
      *
      * @var array
      */
-    protected $fillable = ['uid', 'value', 'position'];
+    protected $fillable = ['uid', 'value', 'position','outlet_value_id'];
 
     /**
      * The attributes that are translatable.

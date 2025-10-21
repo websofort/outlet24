@@ -62,7 +62,6 @@ class CheckoutController extends Controller
      */
     public function store(StoreOrderRequest $request, CustomerService $customerService, OrderService $orderService)
     {
-        Log::info('CheckoutController@store');
         if (auth()->guest() && $request->create_an_account) {
             $customerService->register($request)->login();
         }
@@ -91,7 +90,6 @@ class CheckoutController extends Controller
      */
     public function create(): View|Factory|Application
     {
-        Log::info('CheckoutController@store');
         Cart::clearCartConditions();
 
         return view('storefront::public.checkout.create', [

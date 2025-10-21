@@ -602,6 +602,7 @@ Alpine.data("ProductShow", ({ product, variant, reviewCount, avgRating }) => ({
 
     setVariant() {
         const selectedUids = Object.values(this.cartItemForm.variations)
+            .sort()
             .join(".");
 
         const variant = this.product.variants.find(
@@ -783,7 +784,6 @@ Alpine.data("ProductShow", ({ product, variant, reviewCount, avgRating }) => ({
         if (this.isAddToCartDisabled) return;
 
         this.addingToCart = true;
-
         axios
             .post("/cart/items", {
                 ...this.cartItemForm,

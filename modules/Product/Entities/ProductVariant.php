@@ -41,6 +41,7 @@ class ProductVariant extends Model
         'in_stock',
         'is_active',
         'is_default',
+        'outlet_variation_id'
     ];
 
     /**
