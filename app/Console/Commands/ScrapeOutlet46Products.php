@@ -1268,11 +1268,18 @@ class ScrapeOutlet46Products extends Command
             return $existingVariation->id;
         }
 
+        $maxPosition = DB::table('product_variations')
+            ->join('variations', 'product_variations.variation_id', '=', 'variations.id')
+            ->where('product_variations.product_id', $productId)
+            ->max('variations.position');
+
+        $nextPosition = ($maxPosition ?? 0) + 1;
+
         $variationId = DB::table('variations')->insertGetId([
             'uid' => $this->generateUid(),
             'type' => 'text',
             'is_global' => false,
-            'position' => 1,
+            'position' => $nextPosition,
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -1298,7 +1305,6 @@ class ScrapeOutlet46Products extends Command
 
         return $variationId;
     }
-
     protected function createProductVariationValue($label, $variationId,$outletValueId = null, &$existingVariationValues = null)
     {
         $existingValue = DB::table('variation_values')
