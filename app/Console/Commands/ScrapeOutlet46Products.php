@@ -1507,9 +1507,12 @@ class ScrapeOutlet46Products extends Command
 
         if ($existingValue) {
             if ($outletValueId && ($existingValue->outlet_value_id !== null && $existingValue->outlet_value_id != $outletValueId)) {
-                $existingValue->update([
-                    'outlet_value_id' => $outletValueId,
-                ]);
+                DB::table('variation_values')
+                    ->where('id', $existingValue->id)
+                    ->update([
+                        'outlet_value_id' => $outletValueId,
+                        'updated_at' => now(),
+                    ]);
             }
 
             if ($existingVariationValues !== null) {
@@ -1518,7 +1521,7 @@ class ScrapeOutlet46Products extends Command
                     'id' => $existingValue->id,
                     'variation_id' => $variationId,
                     'label' => $label,
-                    'outlet_value_id' => $outletValueId,
+                    'outlet_value_id' => $outletValueId ?? $existingValue->outlet_value_id,
                 ];
                 $existingVariationValues->put($key, $variationValue);
             }
