@@ -611,11 +611,23 @@ Alpine.data("ProductShow", ({ product, variant, reviewCount, avgRating }) => ({
 
         if (variant !== undefined) {
             this.item = { ...variant };
-
             this.reduceToMaxQuantity();
-
             return;
         }
+
+        const selectedUidsWithoutSort = Object.values(this.cartItemForm.variations)
+            .join(".");
+
+        const variantWithoutSort = this.product.variants.find(
+            (variant) => variant.uids === selectedUidsWithoutSort
+        );
+
+        if (variantWithoutSort !== undefined) {
+            this.item = { ...variantWithoutSort };
+            this.reduceToMaxQuantity();
+            return;
+        }
+
 
         // Set empty variant data if variant does not exist
         const uid = md5(

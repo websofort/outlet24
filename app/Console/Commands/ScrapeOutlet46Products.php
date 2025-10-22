@@ -182,7 +182,7 @@ class ScrapeOutlet46Products extends Command
                 'price_valid_until' => $jsonLd['offers']['priceValidUntil'] ?? null,
                 'currency' => $jsonLd['offers']['priceCurrency'] ?? 'EUR',
 
-                'in_stock' => $this->isInStock($jsonLd['offers']['availability'] ?? ''),
+                'in_stock' => 1,
                 'condition' => $this->getCondition($jsonLd['offers']['itemCondition'] ?? ''),
 
                 'attributes' => $attributes,
@@ -571,23 +571,40 @@ class ScrapeOutlet46Products extends Command
     }
 
 
-    private function downloadImage($imageUrl)
+    private function downloadImage($imageUrl, &$existingFiles = null)
     {
         try {
             $fileName = basename(parse_url($imageUrl, PHP_URL_PATH));
+
+            if ($existingFiles && isset($existingFiles[$fileName])) {
+                return $existingFiles[$fileName]->id;
+            }
+
             $existingFile = File::where('filename', $fileName)
                 ->where('disk', config('filesystems.default'))
                 ->first();
 
             if ($existingFile) {
+                if ($existingFiles !== null) {
+                    $existingFiles[$fileName] = $existingFile;
+                }
                 return $existingFile->id;
             }
 
-            $contents = file_get_contents($imageUrl);
+            $contents = @file_get_contents($imageUrl);
+            if ($contents === false) {
+                Log::error("Failed to download image: {$imageUrl}");
+                return null;
+            }
+
             $fileType = pathinfo($fileName, PATHINFO_EXTENSION);
 
             if (empty($fileType)) {
-                $fileType = match($fileType) {
+                $finfo = finfo_open(FILEINFO_MIME_TYPE);
+                $mimeType = finfo_buffer($finfo, $contents);
+                finfo_close($finfo);
+
+                $fileType = match($mimeType) {
                     'image/jpeg' => 'jpg',
                     'image/png' => 'png',
                     'image/gif' => 'gif',
@@ -608,14 +625,17 @@ class ScrapeOutlet46Products extends Command
             $file->size = strlen($contents);
             $file->save();
 
+            if ($existingFiles !== null) {
+                $existingFiles[$fileName] = $file;
+            }
+
             return $file->id;
         } catch (\Exception $e) {
-            Log::error("Error downloading image: " . $e->getMessage());
+            Log::error("Error downloading image: " . $e->getMessage(), ['url' => $imageUrl]);
             return null;
         }
     }
-
-    private function attachImages($productId, $images)
+    private function attachImages($productId, $images,&$existingFiles = null)
     {
         $product = Product::find($productId);
         if (!$product) {
@@ -642,7 +662,7 @@ class ScrapeOutlet46Products extends Command
         $newEntityFiles = [];
         foreach ($imagesToDownload as $zone => $imageUrls) {
             foreach ($imageUrls as $imageUrl) {
-                $fileId = $this->downloadImage($imageUrl);
+                $fileId = $this->downloadImage($imageUrl,$existingFiles);
                 if ($fileId) {
                     $newEntityFiles[] = [
                         'file_id' => $fileId,
@@ -673,7 +693,7 @@ class ScrapeOutlet46Products extends Command
         }
     }
 
-    private function attachAdditionalImages($productId, $images)
+    private function attachAdditionalImages($productId, $images,&$existingFiles = null)
     {
         $product = Product::find($productId);
         if (!$product) {
@@ -685,7 +705,6 @@ class ScrapeOutlet46Products extends Command
             return;
         }
 
-        // Get ALL existing product images (all zones) to avoid duplicates
         $existingProductEntityFiles = EntityFile::where('entity_type', 'Modules\Product\Entities\Product')
             ->where('entity_id', $productId)
             ->pluck('file_id')
@@ -695,17 +714,20 @@ class ScrapeOutlet46Products extends Command
         foreach ($images as $imageUrl) {
             $fileName = basename(parse_url($imageUrl, PHP_URL_PATH));
 
-            $existingFile = File::where('filename', $fileName)
-                ->where('disk', config('filesystems.default'))
-                ->first();
+            if ($existingFiles && isset($existingFiles[$fileName])) {
+                $existingFile = $existingFiles[$fileName];
+            } else {
+                $existingFile = File::where('filename', $fileName)
+                    ->where('disk', config('filesystems.default'))
+                    ->first();
+            }
 
             if ($existingFile) {
-                // Check if this file is already attached to this product in ANY zone
                 if (!in_array($existingFile->id, $existingProductEntityFiles)) {
                     $newFileIds[] = $existingFile->id;
                 }
             } else {
-                $fileId = $this->downloadImage($imageUrl);
+                $fileId = $this->downloadImage($imageUrl,$existingFiles);
                 if ($fileId && !in_array($fileId, $existingProductEntityFiles)) {
                     $newFileIds[] = $fileId;
                 }
@@ -726,17 +748,11 @@ class ScrapeOutlet46Products extends Command
         }
     }
 
-    private function attachVariationImages($variantId, $images)
+    private function attachVariationImages($variantId, $images, &$existingFiles = null)
     {
         if (empty($images)) {
             return;
         }
-
-        $existingEntityFiles = EntityFile::where('entity_type', 'Modules\Product\Entities\ProductVariant')
-            ->where('entity_id', $variantId)
-            ->where('zone', 'additional_images')
-            ->pluck('file_id')
-            ->toArray();
 
         $newFileIds = [];
         foreach ($images as $image) {
@@ -747,30 +763,41 @@ class ScrapeOutlet46Products extends Command
 
             $fileName = basename(parse_url($imageUrl, PHP_URL_PATH));
 
-            $existingFile = File::where('filename', $fileName)
-                ->where('disk', config('filesystems.default'))
-                ->first();
+            if ($existingFiles && isset($existingFiles[$fileName])) {
+                $existingFile = $existingFiles[$fileName];
+            } else {
+                $existingFile = File::where('filename', $fileName)
+                    ->where('disk', config('filesystems.default'))
+                    ->first();
+
+                if ($existingFile && $existingFiles !== null) {
+                    $existingFiles[$fileName] = $existingFile;
+                }
+            }
 
             if ($existingFile) {
-                if (!in_array($existingFile->id, $existingEntityFiles)) {
-                    $newFileIds[] = $existingFile->id;
-                }
+                $newFileIds[] = $existingFile->id;
             } else {
-                $fileId = $this->downloadImage($imageUrl);
-                if ($fileId && !in_array($fileId, $existingEntityFiles)) {
+                $fileId = $this->downloadImage($imageUrl, $existingFiles);
+                if ($fileId) {
                     $newFileIds[] = $fileId;
                 }
             }
         }
 
-        if ($existingEntityFiles) {
-            EntityFile::where('entity_type', 'Modules\Product\Entities\ProductVariant')
-                ->where('entity_id', $variantId)
-                ->where('zone', 'additional_images')
-                ->delete();
+        if (empty($newFileIds)) {
+            return;
         }
 
-        if (!empty($newFileIds)) {
+        $existingVariantImages = EntityFile::where('entity_type', 'Modules\Product\Entities\ProductVariant')
+            ->where('entity_id', $variantId)
+            ->where('zone', 'additional_images')
+            ->pluck('file_id')
+            ->toArray();
+
+        $imagesToInsert = array_diff($newFileIds, $existingVariantImages);
+
+        if (!empty($imagesToInsert)) {
             $insertData = array_map(function($fileId) use ($variantId) {
                 return [
                     'file_id' => $fileId,
@@ -778,7 +805,7 @@ class ScrapeOutlet46Products extends Command
                     'entity_id' => $variantId,
                     'zone' => 'additional_images',
                 ];
-            }, $newFileIds);
+            }, $imagesToInsert);
 
             EntityFile::insert($insertData);
         }
@@ -788,7 +815,7 @@ class ScrapeOutlet46Products extends Command
         $productsData = [];
         foreach ($links as $link) {
             $productData = $this->scrapeProductDetails($link, $gender);
-            if ($productData) {
+            if ($productData && $this->validateProductData($productData)) {
                 $productsData[] = $productData;
             }
         }
@@ -797,11 +824,121 @@ class ScrapeOutlet46Products extends Command
             return;
         }
 
+        $existingFiles = $this->preloadImageFiles($productsData);
+        $entities = $this->preloadEntities($productsData, $gender);
+
+        $productsToUpdate = [];
+        $allVariantsToUpdate = [];
+
+        foreach ($productsData as $productData) {
+            $variantsToUpdate = [];
+
+            $this->createProduct(
+                $productData,
+                $gender,
+                $entities['existingProducts'],
+                $entities['existingBrands'],
+                $entities['categoriesByNameAndParent'],
+                $entities['existingAttributeSets'],
+                $entities['existingAttributes'],
+                $entities['existingAttributeValues'],
+                $entities['existingVariations'],
+                $entities['existingVariationValues'],
+                $entities['existingVariants'],
+                $entities['existingProductVariations'],
+                $existingFiles,
+                $productsToUpdate,
+                $variantsToUpdate
+            );
+
+            foreach ($variantsToUpdate as $variant) {
+                $allVariantsToUpdate[] = [
+                    'variant' => $variant,
+                    'productData' => $productData
+                ];
+            }
+        }
+
+        if (!empty($productsToUpdate)) {
+            $this->updateProducts($productsToUpdate);
+        }
+
+        if (!empty($allVariantsToUpdate)) {
+            $variantsOnly = array_column($allVariantsToUpdate, 'variant');
+            $this->updateProductVariants($variantsOnly);
+
+            foreach ($allVariantsToUpdate as $item) {
+                $variantUpdate = $item['variant'];
+                $productData = $item['productData'];
+
+                $variantId = $variantUpdate['id'];
+                $outletVariationId = $variantUpdate['outlet_variation_id'] ?? null;
+
+                if (!$outletVariationId) {
+                    continue;
+                }
+
+                $hasImages = EntityFile::where('entity_type', 'Modules\Product\Entities\ProductVariant')
+                    ->where('entity_id', $variantId)
+                    ->where('zone', 'additional_images')
+                    ->exists();
+
+                if ($hasImages) {
+                    continue;
+                }
+
+                $variationData = $this->scrapeVariationDetails($outletVariationId);
+
+                if ($variationData && !empty($variationData['images'])) {
+                    $this->attachVariationImages($variantId, $variationData['images'], $existingFiles);
+                } else {
+                    $productImages = $productData['images']['additional'] ?? [];
+                    if (!empty($productImages)) {
+                        $productId = DB::table('product_variants')
+                            ->where('id', $variantId)
+                            ->value('product_id');
+
+                        if ($productId) {
+                            $this->attachAdditionalImages($productId, $productImages, $existingFiles);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private function preloadImageFiles(array $productsData): \Illuminate\Support\Collection
+    {
+        $allImageUrls = [];
+        foreach ($productsData as $productData) {
+            if (!empty($productData['images']['main'])) {
+                $allImageUrls[] = basename(parse_url($productData['images']['main'], PHP_URL_PATH));
+            }
+            if (!empty($productData['images']['additional'])) {
+                foreach ($productData['images']['additional'] as $url) {
+                    $allImageUrls[] = basename(parse_url($url, PHP_URL_PATH));
+                }
+            }
+        }
+
+        $allImageUrls = array_unique($allImageUrls);
+
+        return File::whereIn('filename', $allImageUrls)
+            ->where('disk', config('filesystems.default'))
+            ->get()
+            ->keyBy('filename');
+    }
+
+    private function preloadEntities(array $productsData, string $gender): array
+    {
+        $locale = 'en';
+
         $allSkus = array_column($productsData, 'sku');
+        $allProductUrls = array_column($productsData, 'url');
         $allBrandNames = array_unique(array_column($productsData, 'brand'));
-        $allCategoryNames = [];
-        $allAttributeNames = [];
-        $allAttributeValues = [];
+        $allCategoryNames = [$gender];
+        $allAttributeNames = ['Gender', 'Brand'];
+        $allAttributeValues = [ucfirst($gender)];
         $allSizeValues = [];
         $allColorValues = [];
 
@@ -809,6 +946,12 @@ class ScrapeOutlet46Products extends Command
             if (!empty($productData['categories'])) {
                 foreach ($productData['categories'] as $cat) {
                     $allCategoryNames[] = ucfirst($cat);
+                }
+            }
+
+            foreach ($allBrandNames as $brandName) {
+                if (!empty($brandName)) {
+                    $allAttributeValues[] = ucfirst($brandName);
                 }
             }
 
@@ -832,152 +975,152 @@ class ScrapeOutlet46Products extends Command
             }
         }
 
-        $allAttributeNames[] = 'Gender';
-        $allAttributeValues[] = ucfirst($gender);
-        $allAttributeNames[] = 'Brand';
-        foreach ($allBrandNames as $brandName) {
-            if (!empty($brandName)) {
-                $allAttributeValues[] = ucfirst($brandName);
-            }
-        }
-        $allCategoryNames[] = $gender;
-
         $allCategoryNames = array_unique($allCategoryNames);
         $allAttributeNames = array_unique($allAttributeNames);
         $allAttributeValues = array_unique($allAttributeValues);
         $allSizeValues = array_unique($allSizeValues);
         $allColorValues = array_unique($allColorValues);
 
-        $locale = 'en';
+        return [
+            'existingProducts' => $this->loadProducts($allProductUrls, $locale),
+            'existingBrands' => $this->loadBrands($allBrandNames, $locale),
+            'categoriesByNameAndParent' => $this->loadCategories($allCategoryNames, $locale),
+            'existingAttributeSets' => $this->loadAttributeSets($allAttributeNames, $locale),
+            'existingAttributes' => $this->loadAttributes($allAttributeNames, $locale),
+            'existingAttributeValues' => $this->loadAttributeValues($allAttributeValues, $locale),
+            'existingVariations' => $this->loadVariations($allSizeValues, $allColorValues, $locale),
+            'existingVariationValues' => $this->loadVariationValues($allSizeValues, $allColorValues, $locale),
+            'existingVariants' => $this->loadVariants($allProductUrls),
+            'existingProductVariations' => collect(),
+        ];
+    }
 
-        $existingProducts = Product::whereIn('sku', $allSkus)
+    private function loadProducts(array $product_urls, string $locale)
+    {
+        return Product::whereIn('product_url', $product_urls)
             ->with(['translations' => function ($query) use ($locale) {
                 $query->where('locale', $locale);
             }])
             ->get()
-            ->keyBy('sku');
+            ->keyBy('product_url');
+    }
 
-        $existingBrands = Brand::whereHas('translations', function ($query) use ($allBrandNames, $locale) {
-            $query->where('locale', $locale)
-                ->whereIn('name', $allBrandNames);
+    private function loadBrands(array $brandNames, string $locale)
+    {
+        return Brand::whereHas('translations', function ($query) use ($brandNames, $locale) {
+            $query->where('locale', $locale)->whereIn('name', $brandNames);
         })->with(['translations' => function ($query) use ($locale) {
             $query->where('locale', $locale);
         }])->get()->keyBy(function ($item) use ($locale) {
             return $item->translate($locale)->name ?? '';
         });
+    }
 
-        $existingCategories = Category::whereHas('translations', function ($query) use ($allCategoryNames, $locale) {
-            $query->where('locale', $locale)
-                ->whereIn('name', $allCategoryNames);
+    private function loadCategories(array $categoryNames, string $locale)
+    {
+        $categories = Category::whereHas('translations', function ($query) use ($categoryNames, $locale) {
+            $query->where('locale', $locale)->whereIn('name', $categoryNames);
         })->with(['translations' => function ($query) use ($locale) {
             $query->where('locale', $locale);
         }])->get();
 
-        $categoriesByNameAndParent = $existingCategories->groupBy(function ($item) use ($locale) {
+        return $categories->groupBy(function ($item) use ($locale) {
             $name = $item->translate($locale)->name ?? '';
             return $name . '|' . ($item->parent_id ?? 'null');
         });
+    }
 
-        $existingAttributeSets = AttributeSet::whereHas('translations', function ($query) use ($allAttributeNames, $locale) {
-            $query->where('locale', $locale)
-                ->whereIn('name', $allAttributeNames);
+    private function loadAttributeSets(array $attributeNames, string $locale)
+    {
+        return AttributeSet::whereHas('translations', function ($query) use ($attributeNames, $locale) {
+            $query->where('locale', $locale)->whereIn('name', $attributeNames);
         })->with(['translations' => function ($query) use ($locale) {
             $query->where('locale', $locale);
         }])->get()->keyBy(function ($item) use ($locale) {
             return $item->translate($locale)->name ?? '';
         });
+    }
 
-        $existingAttributes = Attribute::whereHas('translations', function ($query) use ($allAttributeNames, $locale) {
-            $query->where('locale', $locale)
-                ->whereIn('name', $allAttributeNames);
+    private function loadAttributes(array $attributeNames, string $locale)
+    {
+        return Attribute::whereHas('translations', function ($query) use ($attributeNames, $locale) {
+            $query->where('locale', $locale)->whereIn('name', $attributeNames);
         })->with(['translations' => function ($query) use ($locale) {
             $query->where('locale', $locale);
         }])->get()->keyBy(function ($item) use ($locale) {
             return $item->translate($locale)->name ?? '';
         });
+    }
 
-        $existingAttributeValues = AttributeValue::whereHas('translations', function ($query) use ($allAttributeValues, $locale) {
-            $query->where('locale', $locale)
-                ->whereIn('value', $allAttributeValues);
+    private function loadAttributeValues(array $attributeValues, string $locale)
+    {
+        return AttributeValue::whereHas('translations', function ($query) use ($attributeValues, $locale) {
+            $query->where('locale', $locale)->whereIn('value', $attributeValues);
         })->with(['translations' => function ($query) use ($locale) {
             $query->where('locale', $locale);
         }])->get()->keyBy(function ($item) use ($locale) {
             return $item->translate($locale)->value ?? '';
         });
-
-        $existingVariations = collect();
-        if (!empty($allSizeValues) || !empty($allColorValues)) {
-            $variationNames = [];
-            if (!empty($allSizeValues)) $variationNames[] = 'Size';
-            if (!empty($allColorValues)) $variationNames[] = 'Color';
-
-            $existingVariations = DB::table('variations')
-                ->join('variation_translations', 'variations.id', '=', 'variation_translations.variation_id')
-                ->whereIn('variation_translations.name', $variationNames)
-                ->where('variation_translations.locale', $locale)
-                ->where('variations.is_global', false)
-                ->select('variations.*', 'variation_translations.name as variation_name')
-                ->get()
-                ->keyBy('variation_name');
-        }
-
-        $existingVariationValues = collect();
-        if (!empty($allSizeValues) || !empty($allColorValues)) {
-            $allVariationValues = array_merge($allSizeValues, $allColorValues);
-
-            $variationValuesCollection = DB::table('variation_values')
-                ->join('variation_value_translations', 'variation_values.id', '=', 'variation_value_translations.variation_value_id')
-                ->whereIn('variation_value_translations.label', $allVariationValues)
-                ->where('variation_value_translations.locale', $locale)
-                ->select('variation_values.*', 'variation_value_translations.label')
-                ->get();
-
-            foreach ($variationValuesCollection as $vv) {
-                $key = $vv->variation_id . '|' . $vv->label;
-                $existingVariationValues->put($key, $vv);
-            }
-        }
-
-        $existingVariants = collect();
-        if ($existingProducts->isNotEmpty()) {
-            $variantsCollection = DB::table('product_variants')
-                ->whereIn('product_id', $existingProducts->pluck('id'))
-                ->get();
-
-            foreach ($variantsCollection as $variant) {
-                $existingVariants->put($variant->sku, $variant);
-            }
-        }
-
-        $existingProductVariations = collect();
-        if ($existingProducts->isNotEmpty()) {
-            $productVariationsCollection = DB::table('product_variations')
-                ->whereIn('product_id', $existingProducts->pluck('id'))
-                ->get();
-
-            foreach ($productVariationsCollection as $pv) {
-                $key = $pv->product_id . '|' . $pv->variation_id;
-                $existingProductVariations->put($key, $pv);
-            }
-        }
-
-        foreach ($productsData as $productData) {
-            $this->createProduct(
-                $productData,
-                $gender,
-                $existingProducts,
-                $existingBrands,
-                $categoriesByNameAndParent,
-                $existingAttributeSets,
-                $existingAttributes,
-                $existingAttributeValues,
-                $existingVariations,
-                $existingVariationValues,
-                $existingVariants,
-                $existingProductVariations
-            );
-        }
     }
+
+    private function loadVariations(array $sizeValues, array $colorValues, string $locale)
+    {
+        if (empty($sizeValues) && empty($colorValues)) {
+            return collect();
+        }
+
+        $variationNames = [];
+        if (!empty($sizeValues)) $variationNames[] = 'Size';
+        if (!empty($colorValues)) $variationNames[] = 'Color';
+
+        return DB::table('variations')
+            ->join('variation_translations', 'variations.id', '=', 'variation_translations.variation_id')
+            ->whereIn('variation_translations.name', $variationNames)
+            ->where('variation_translations.locale', $locale)
+            ->where('variations.is_global', false)
+            ->select('variations.*', 'variation_translations.name as variation_name')
+            ->get()
+            ->keyBy('variation_name');
+    }
+
+    private function loadVariationValues(array $sizeValues, array $colorValues, string $locale)
+    {
+        if (empty($sizeValues) && empty($colorValues)) {
+            return collect();
+        }
+
+        $allVariationValues = array_merge($sizeValues, $colorValues);
+
+        $variationValuesCollection = DB::table('variation_values')
+            ->join('variation_value_translations', 'variation_values.id', '=', 'variation_value_translations.variation_value_id')
+            ->whereIn('variation_value_translations.label', $allVariationValues)
+            ->where('variation_value_translations.locale', $locale)
+            ->select('variation_values.*', 'variation_value_translations.label')
+            ->get();
+
+        $result = collect();
+        foreach ($variationValuesCollection as $vv) {
+            $key = $vv->variation_id . '|' . $vv->label;
+            $result->put($key, $vv);
+        }
+
+        return $result;
+    }
+
+    private function loadVariants(array $allProductUrls)
+    {
+        $products = Product::whereIn('product_url', $allProductUrls)->pluck('id');
+
+        if ($products->isEmpty()) {
+            return collect();
+        }
+
+        return DB::table('product_variants')
+            ->whereIn('product_id', $products)
+            ->get()
+            ->keyBy('sku');
+    }
+
     private function createProduct(
         array $productData,
         string $gender,
@@ -990,9 +1133,11 @@ class ScrapeOutlet46Products extends Command
         &$existingVariations,
         &$existingVariationValues,
         &$existingVariants,
-        &$existingProductVariations
+        &$existingProductVariations,
+        &$existingFiles,
+        &$productsToUpdate,
+        &$variantsToUpdate
     ) {
-
         $categoryIds = $this->createCategory(
             $productData['categories'],
             $gender,
@@ -1009,38 +1154,71 @@ class ScrapeOutlet46Products extends Command
         );
 
         $brand = $existingBrands->get($productData['brand']);
-
-        $product = $existingProducts->get($productData['sku']);
-        $isNewProduct = !$product;
+        $product = $existingProducts->get($productData['product_url']);
 
         if (!$product) {
             $product = new Product();
-        }
-
-        $product->name = $productData['name'];
-        $product->sku = $productData['sku'];
-        $product->product_url = $productData['product_url'];
-        $product->description = $productData['full_description'];
-        $product->price = $productData['price'];
-        $product->special_price = $productData['special_price'];
-        $product->special_price_start = $productData['special_price'] ? now() : null;
-        $product->special_price_end = $productData['special_price'] ? $productData['price_valid_until'] : null;
-        $product->special_price_type = $productData['special_price'] ? 'fixed' : null;
-
-        $product->in_stock = $productData['in_stock'];
-        $product->brand_id = $brand?->id;
-
-        if ($isNewProduct) {
+            $product->name = $productData['name'];
+            $product->sku = $productData['sku'];
+            $product->product_url = $productData['product_url'];
+            $product->description = $productData['full_description'];
+            $product->short_description = $productData['description'];
+            $product->price = $productData['price'];
+            $product->special_price = $productData['special_price'];
+            $product->special_price_start = $productData['special_price'] ? now()->format('Y-m-d') : null;
+            $product->special_price_end = $productData['special_price'] ? $productData['price_valid_until'] : null;
+            $product->special_price_type = $productData['special_price'] ? 'fixed' : null;
+            $product->in_stock = $productData['in_stock'];
+            $product->brand_id = $brand?->id;
             $product->is_active = true;
+            $product->save();
+
+            $product->selling_price = $productData['special_price'] ?: $productData['price'];
+            $product->save();
+
+            $existingProducts->put($product->product_url, $product);
+        } else {
+            $productsToUpdate[] = [
+                'id' => $product->id,
+                'name' => $productData['name'],
+                'description' => $productData['full_description'],
+                'short_description' => $productData['description'],
+                'price' => $productData['price'],
+                'special_price' => $productData['special_price'],
+                'special_price_start' => $productData['special_price'] ? now()->format('Y-m-d') : null,
+                'special_price_end' => $productData['special_price'] ? $productData['price_valid_until'] : null,
+                'special_price_type' => $productData['special_price'] ? 'fixed' : null,
+                'selling_price' => $productData['special_price'] ?: $productData['price'],
+                'in_stock' => $productData['in_stock'],
+                'product_url' => $productData['product_url'],
+                'brand_id' => $brand?->id,
+            ];
         }
 
-        $product->save();
-        $product->selling_price = $productData['special_price'] ?: $productData['price'];
-        $product->save();
+        $this->syncProductAttributes($product->id, $attributeIds);
 
-        $existingProducts->put($product->sku, $product);
+        $product->categories()->sync($categoryIds->unique()->values()->toArray());
 
-        $existingProductAttributes = ProductAttribute::where('product_id', $product->id)
+        $this->attachImages($product->id, $productData['images'], $existingFiles);
+
+        if (!empty($productData['attributes'])) {
+            $this->processProductVariants(
+                $product,
+                $productData,
+                $existingVariations,
+                $existingVariationValues,
+                $existingVariants,
+                $existingFiles,
+                $variantsToUpdate
+            );
+        }
+
+        $this->syncVariantImagesToProduct($product->id);
+    }
+
+    private function syncProductAttributes($productId, $attributeIds)
+    {
+        $existingProductAttributes = ProductAttribute::where('product_id', $productId)
             ->whereIn('attribute_id', $attributeIds->keys())
             ->get()
             ->keyBy('attribute_id');
@@ -1055,7 +1233,6 @@ class ScrapeOutlet46Products extends Command
         }
 
         $productAttributeValuesToInsert = [];
-        $newProductAttributeIds = [];
         $insertedCombinations = [];
 
         foreach ($attributeIds as $attributeId => $valueMap) {
@@ -1063,15 +1240,13 @@ class ScrapeOutlet46Products extends Command
 
             if (!$productAttribute) {
                 $productAttribute = new ProductAttribute();
-                $productAttribute->product_id = $product->id;
+                $productAttribute->product_id = $productId;
                 $productAttribute->attribute_id = $attributeId;
                 $productAttribute->save();
-
-                $newProductAttributeIds[$attributeId] = $productAttribute->id;
                 $existingProductAttributes->put($attributeId, $productAttribute);
             }
 
-            $productAttributeId = $productAttribute->id ?? $newProductAttributeIds[$attributeId];
+            $productAttributeId = $productAttribute->id;
             $existingValues = $existingProductAttributeValues[$productAttributeId] ?? collect();
             $existingValueIds = $existingValues->pluck('attribute_value_id')->toArray();
 
@@ -1091,162 +1266,177 @@ class ScrapeOutlet46Products extends Command
         if (!empty($productAttributeValuesToInsert)) {
             ProductAttributeValue::insert($productAttributeValuesToInsert);
         }
+    }
 
-        $product->categories()->sync($categoryIds->unique()->values()->toArray());
-        $this->attachImages($product->id, $productData['images']);
+    private function processProductVariants(
+        $product,
+        array $productData,
+        &$existingVariations,
+        &$existingVariationValues,
+        &$existingVariants,
+        &$existingFiles,
+        &$variantsToUpdate
+    ) {
+        $sizeValues = [];
+        $colorValues = [];
 
-        if (!empty($productData['attributes'])) {
-            $sizeValues = [];
-            $colorValues = [];
+        foreach ($productData['attributes'] as $attrName => $attrData) {
+            $values = $attrData['values'] ?? $attrData;
 
-            foreach ($productData['attributes'] as $attrName => $attrData) {
-                $values = $attrData['values'] ?? $attrData;
-
-                if (strtolower($attrName) === 'size' && is_array($values)) {
-                    $sizeValues = $values;
-                } elseif (strtolower($attrName) === 'color' && is_array($values)) {
-                    $colorValues = $values;
-                }
+            if (strtolower($attrName) === 'size' && is_array($values)) {
+                $sizeValues = $values;
+            } elseif (strtolower($attrName) === 'color' && is_array($values)) {
+                $colorValues = $values;
             }
+        }
 
+        $variationIds = [];
 
-            $variationIds = [];
+        if (!empty($sizeValues)) {
+            $sizeVariationId = $this->createProductVariation('Size', $product->id, $existingVariations);
+            $variationIds['size'] = $sizeVariationId;
 
-            if (!empty($sizeValues)) {
-                $sizeVariationId = $this->createProductVariation('Size', $product->id, $existingVariations);
-                $variationIds['size'] = $sizeVariationId;
-
-                foreach ($sizeValues as $sizeData) {
-                    $valueId = $this->createProductVariationValue(
-                        $sizeData['value'],
-                        $sizeVariationId,
-                        $sizeData['outlet_value_id'] ?? null,
-                        $existingVariationValues
-                    );
-                }
+            foreach ($sizeValues as $sizeData) {
+                $this->createProductVariationValue(
+                    $sizeData['value'],
+                    $sizeVariationId,
+                    $sizeData['outlet_value_id'] ?? null,
+                    $existingVariationValues
+                );
             }
+        }
 
-            if (!empty($colorValues)) {
-                $colorVariationId = $this->createProductVariation('Color', $product->id, $existingVariations);
-                $variationIds['color'] = $colorVariationId;
+        if (!empty($colorValues)) {
+            $colorVariationId = $this->createProductVariation('Color', $product->id, $existingVariations);
+            $variationIds['color'] = $colorVariationId;
 
+            foreach ($colorValues as $colorData) {
+                $this->createProductVariationValue(
+                    $colorData['value'],
+                    $colorVariationId,
+                    $colorData['outlet_value_id'] ?? null,
+                    $existingVariationValues
+                );
+            }
+        }
+
+        if (!empty($sizeValues) && !empty($colorValues)) {
+            foreach ($sizeValues as $sizeData) {
                 foreach ($colorValues as $colorData) {
-                    $valueId = $this->createProductVariationValue(
-                        $colorData['value'],
-                        $colorVariationId,
-                        $colorData['outlet_value_id'] ?? null,
-                        $existingVariationValues
+                    $this->createSingleVariant(
+                        $product,
+                        $productData,
+                        $sizeData,
+                        $colorData,
+                        $variationIds,
+                        $existingVariationValues,
+                        $existingVariants,
+                        $existingFiles,
+                        $variantsToUpdate
                     );
                 }
             }
+        } elseif (!empty($sizeValues)) {
+            foreach ($sizeValues as $sizeData) {
+                $this->createSingleVariant(
+                    $product,
+                    $productData,
+                    $sizeData,
+                    null,
+                    $variationIds,
+                    $existingVariationValues,
+                    $existingVariants,
+                    $existingFiles,
+                    $variantsToUpdate
+                );
+            }
+        } elseif (!empty($colorValues)) {
+            foreach ($colorValues as $colorData) {
+                $this->createSingleVariant(
+                    $product,
+                    $productData,
+                    null,
+                    $colorData,
+                    $variationIds,
+                    $existingVariationValues,
+                    $existingVariants,
+                    $existingFiles,
+                    $variantsToUpdate
+                );
+            }
+        }
+    }
 
-            if (!empty($sizeValues) && !empty($colorValues)) {
-                foreach ($sizeValues as $sizeData) {
-                    foreach ($colorValues as $colorData) {
-                        $sizeValue = $sizeData['value'];
-                        $colorValue = $colorData['value'];
-                        $available = ($sizeData['available'] ?? true) && ($colorData['available'] ?? true);
+    private function createSingleVariant(
+        $product,
+        array $productData,
+        $sizeData,
+        $colorData,
+        array $variationIds,
+        &$existingVariationValues,
+        &$existingVariants,
+        &$existingFiles,
+        &$variantsToUpdate
+    ) {
+        $variationValueIds = [];
+        $combinedName = '';
+        $available = true;
+        $outletValueIds = [];
 
-                        $sizeVariationValueId = $this->getVariationValueId($sizeValue, $variationIds['size'], $existingVariationValues);
-                        $colorVariationValueId = $this->getVariationValueId($colorValue, $variationIds['color'], $existingVariationValues);
-
-                        if (!$sizeVariationValueId || !$colorVariationValueId) {
-                            $this->error("Missing variation value IDs for {$sizeValue} or {$colorValue}");
-                            continue;
-                        }
-
-                        $combinedName = "{$sizeValue} - {$colorValue}";
-
-                        $outletVariationId = $this->findOutletVariationId(
-                            $productData['variants'] ?? [],
-                            $sizeData['outlet_value_id'] ?? null,
-                            $colorData['outlet_value_id'] ?? null
-                        );
-
-
-                        $this->createProductVariant(
-                            $product->id,
-                            $combinedName,
-                            $available,
-                            [$sizeVariationValueId, $colorVariationValueId],
-                            $productData['price'],
-                            $productData['special_price'],
-                            $productData['price_valid_until'],
-                            $product->sku,
-                            $existingVariants,
-                            $outletVariationId,
-                            $productData['images']
-                        );
-                    }
-                }
-            } elseif (!empty($sizeValues)) {
-                foreach ($sizeValues as $sizeData) {
-                    $sizeValue = $sizeData['value'];
-                    $available = $sizeData['available'] ?? true;
-
-                    $sizeVariationValueId = $this->getVariationValueId($sizeValue, $variationIds['size'], $existingVariationValues);
-
-                    if (!$sizeVariationValueId) {
-                        $this->error("Missing variation value ID for {$sizeValue}");
-                        continue;
-                    }
-
-                    $outletVariationId = $this->findOutletVariationId(
-                        $productData['variants'] ?? [],
-                        $sizeData['outlet_value_id'] ?? null,
-                    );
-
-                    $this->createProductVariant(
-                        $product->id,
-                        $sizeValue,
-                        $available,
-                        [$sizeVariationValueId],
-                        $productData['price'],
-                        $productData['special_price'],
-                        $productData['price_valid_until'],
-                        $product->sku,
-                        $existingVariants,
-                        $outletVariationId,
-                        $productData['images']
-                    );
-                }
-            } elseif (!empty($colorValues)) {
-                foreach ($colorValues as $colorData) {
-                    $colorValue = $colorData['value'];
-                    $available = $colorData['available'] ?? true;
-
-                    $colorVariationValueId = $this->getVariationValueId($colorValue, $variationIds['color'], $existingVariationValues);
-
-                    if (!$colorVariationValueId) {
-                        $this->error("Missing variation value ID for {$colorValue}");
-                        continue;
-                    }
-
-                    $outletVariationId = $this->findOutletVariationId(
-                        $productData['variants'] ?? [],
-                        $colorData['outlet_value_id'] ?? null,
-                    );
-
-                    $this->createProductVariant(
-                        $product->id,
-                        $colorValue,
-                        $available,
-                        [$colorVariationValueId],
-                        $productData['price'],
-                        $productData['special_price'],
-                        $productData['price_valid_until'],
-                        $product->sku,
-                        $existingVariants,
-                        $outletVariationId,
-                        $productData['images']
-                    );
+        if ($sizeData) {
+            $sizeValue = $sizeData['value'];
+            $sizeVariationValueId = $this->getVariationValueId($sizeValue, $variationIds['size'], $existingVariationValues);
+            if ($sizeVariationValueId) {
+                $variationValueIds[] = $sizeVariationValueId;
+                $combinedName = $sizeValue;
+                $available = $available && ($sizeData['available'] ?? true);
+                if (isset($sizeData['outlet_value_id'])) {
+                    $outletValueIds[] = $sizeData['outlet_value_id'];
                 }
             }
         }
-        $this->syncVariantImagesToProduct($product->id);
+
+        if ($colorData) {
+            $colorValue = $colorData['value'];
+            $colorVariationValueId = $this->getVariationValueId($colorValue, $variationIds['color'], $existingVariationValues);
+            if ($colorVariationValueId) {
+                $variationValueIds[] = $colorVariationValueId;
+                $combinedName = $combinedName ? "{$combinedName} - {$colorValue}" : $colorValue;
+                $available = $available && ($colorData['available'] ?? true);
+                if (isset($colorData['outlet_value_id'])) {
+                    $outletValueIds[] = $colorData['outlet_value_id'];
+                }
+            }
+        }
+
+        if (empty($variationValueIds)) {
+            return;
+        }
+
+        $outletVariationId = $this->findOutletVariationId(
+            $productData['variants'] ?? [],
+            ...$outletValueIds
+        );
+
+        $this->createProductVariant(
+            $product->id,
+            $combinedName,
+            $available,
+            $variationValueIds,
+            $productData['price'],
+            $productData['special_price'],
+            $productData['price_valid_until'],
+            $product->sku,
+            $existingVariants,
+            $outletVariationId,
+            $outletVariationId,
+            $productData,
+            $existingFiles,
+            $variantsToUpdate
+        );
     }
 
-    protected function createProductVariation($variationType, $productId, &$existingVariations = null)
+    protected function createProductVariation($variationType, $productId, &$existingVariations = null )
     {
         $existingVariation = DB::table('product_variations')
             ->join('variations', 'product_variations.variation_id', '=', 'variations.id')
@@ -1312,11 +1502,11 @@ class ScrapeOutlet46Products extends Command
             ->where('variation_values.variation_id', $variationId)
             ->where('variation_value_translations.label', $label)
             ->where('variation_value_translations.locale', 'en')
-            ->select('variation_values.id')
+            ->select(['variation_values.id','variation_values.outlet_value_id'])
             ->first();
 
         if ($existingValue) {
-            if ($outletValueId && $existingValue->outlet_value_id != $outletValueId) {
+            if ($outletValueId && ($existingValue->outlet_value_id !== null && $existingValue->outlet_value_id != $outletValueId)) {
                 $existingValue->update([
                     'outlet_value_id' => $outletValueId,
                 ]);
@@ -1385,51 +1575,64 @@ class ScrapeOutlet46Products extends Command
             ->value('variation_values.id');
     }
 
-    protected function createProductVariant($productId, $name, $available, $variationValueIds, $price, $specialPrice, $specialPriceEnd, $baseSku, $existingVariants,$outletVariationId = null,$productImages = [])
-    {
+    protected function createProductVariant(
+        $productId,
+        $name,
+        $available,
+        $variationValueIds,
+        $price,
+        $specialPrice,
+        $specialPriceEnd,
+        $baseSku,
+        &$existingVariants,
+        $outletVariationId = null,
+        $outletVariationIdForImages = null,
+        $productData = [],
+        &$existingFiles = null,
+        &$variantsToUpdate = null
+    ) {
         $variationValueIds = array_unique($variationValueIds);
 
         $skuSuffix = str_replace([' ', '.', '/', '-'], ['_', '_', '_', '_'], $name);
         $variantSku = $baseSku . '_' . $skuSuffix;
 
-        $dbVariant = DB::table('product_variants')
-            ->where('product_id', $productId)
-            ->where('sku', $variantSku)
-            ->first();
+        $dbVariant = $existingVariants->get($variantSku);
 
         $variationData = null;
         $stockNet = 0;
-        if ($outletVariationId){
-            $variationData = $this->scrapeVariationDetails($outletVariationId);
-            if ($variationData){
+
+        if ($outletVariationIdForImages) {
+            $variationData = $this->scrapeVariationDetails($outletVariationIdForImages);
+            if ($variationData) {
                 $stockNet = $variationData['stock_net'] ?? 0;
             }
         }
 
         if ($dbVariant) {
-            DB::table('product_variants')
-                ->where('id', $dbVariant->id)
-                ->update([
+            if ($variantsToUpdate !== null) {
+                $variantsToUpdate[] = [
+                    'id' => $dbVariant->id,
                     'in_stock' => $outletVariationId ? 1 : 0,
                     'manage_stock' => $stockNet !== 0 ? 1 : 0,
                     'qty' => $stockNet,
                     'price' => $price,
                     'special_price' => $specialPrice,
                     'special_price_type' => $specialPrice ? 'fixed' : null,
-                    'special_price_start' => $specialPrice ? now() : null,
+                    'special_price_start' => $specialPrice ? now()->format('Y-m-d H:i:s') : null,
                     'special_price_end' => $specialPrice ? $specialPriceEnd : null,
                     'selling_price' => $specialPrice ?: $price,
                     'outlet_variation_id' => $outletVariationId,
-                    'updated_at' => now(),
-                ]);
-
-            if ($variationData && !empty($variationData['images'])){
-                $this->attachVariationImages($dbVariant->id, $variationData['images']);
-            } elseif (!$outletVariationId && !empty($productImages['additional'])) {
-                $this->attachAdditionalImages($productId, $productImages['additional']);
+                ];
             }
 
-            $existingVariants->put($variantSku, $dbVariant);
+            if ($variationData && !empty($variationData['images'])) {
+                $this->attachVariationImages($dbVariant->id, $variationData['images'], $existingFiles);
+            } else {
+                $productImages = $productData['images']['additional'] ?? [];
+                if (!empty($productImages)) {
+                    $this->attachAdditionalImages($productId, $productImages, $existingFiles);
+                }
+            }
 
             return $dbVariant->id;
         }
@@ -1450,8 +1653,24 @@ class ScrapeOutlet46Products extends Command
             ->where('product_id', $productId)
             ->count();
 
-        $isDefault = ($existingVariantCount === 0);
-        $position = $existingVariantCount + 1;
+        $currentDefault = DB::table('product_variants')
+            ->where('product_id', $productId)
+            ->where('is_default', 1)
+            ->first();
+
+        $newInStock = $outletVariationId ? 1 : 0;
+        $makeDefault = false;
+
+        if ($existingVariantCount === 0) {
+            $makeDefault = true;
+        } else {
+            if ($currentDefault && (int) $currentDefault->in_stock === 0 && $newInStock === 1) {
+                $makeDefault = true;
+            }
+            if (!$currentDefault) {
+                $makeDefault = true;
+            }
+        }
 
         try {
             $variantId = DB::table('product_variants')->insertGetId([
@@ -1462,20 +1681,46 @@ class ScrapeOutlet46Products extends Command
                 'price' => $price,
                 'special_price' => $specialPrice,
                 'special_price_type' => $specialPrice ? 'fixed' : null,
-                'special_price_start' => $specialPrice ? now() : null,
+                'special_price_start' => $specialPrice ? now()->format('Y-m-d') : null,
                 'special_price_end' => $specialPrice ? $specialPriceEnd : null,
                 'selling_price' => $specialPrice ?: $price,
                 'sku' => $variantSku,
                 'manage_stock' => $stockNet !== 0 ? 1 : 0,
                 'qty' => $stockNet,
-                'in_stock' => $outletVariationId ? 1 : 0,
-                'is_default' => $isDefault,
+                'in_stock' => $newInStock,
+                'is_default' => $makeDefault ? 1 : 0,
                 'is_active' => true,
                 'outlet_variation_id' => $outletVariationId,
-                'position' => $position,
+                'position' => $existingVariantCount + 1,
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
+
+            if ($makeDefault && $currentDefault && $currentDefault->id !== $variantId) {
+                DB::table('product_variants')
+                    ->where('id', $currentDefault->id)
+                    ->update(['is_default' => 0, 'updated_at' => now()]);
+            }
+
+            $defaults = DB::table('product_variants')
+                ->where('product_id', $productId)
+                ->where('is_default', 1)
+                ->pluck('id')
+                ->toArray();
+
+            if (count($defaults) > 1) {
+                $winner = DB::table('product_variants')
+                    ->where('product_id', $productId)
+                    ->orderByDesc('in_stock')
+                    ->orderBy('position')
+                    ->first(['id']);
+
+                DB::table('product_variants')
+                    ->where('product_id', $productId)
+                    ->where('id', '!=', $winner->id)
+                    ->where('is_default', 1)
+                    ->update(['is_default' => 0, 'updated_at' => now()]);
+            }
 
             $newVariant = (object)[
                 'id' => $variantId,
@@ -1486,13 +1731,25 @@ class ScrapeOutlet46Products extends Command
             ];
             $existingVariants->put($variantSku, $newVariant);
 
-            if ($variationData && !empty($variationData['images'])) {
-                $this->attachVariationImages($variantId, $variationData['images']);
-            } elseif (!$outletVariationId && !empty($productImages['additional'])) {
-                $this->attachAdditionalImages($productId, $productImages['additional']);
+            if ($variationData) {
+                if (!empty($variationData['images'])) {
+                    $this->attachVariationImages($variantId, $variationData['images'], $existingFiles);
+                } else {
+                    $productImages = $productData['images']['additional'] ?? [];
+                    if (!empty($productImages)) {
+                        $this->attachAdditionalImages($productId, $productImages, $existingFiles);
+                    }
+                }
+            } else {
+                $productImages = $productData['images']['additional'] ?? [];
+                if (!empty($productImages)) {
+                    $this->attachAdditionalImages($productId, $productImages, $existingFiles);
+                }
             }
 
+
             return $variantId;
+
 
         } catch (\Exception $e) {
             $this->error("Error creating variant: " . $e->getMessage());
@@ -1500,10 +1757,190 @@ class ScrapeOutlet46Products extends Command
                 'product_id' => $productId,
                 'sku' => $variantSku,
                 'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
             ]);
             return null;
         }
+    }
+
+    private function updateProductVariants(array $variantsToUpdate)
+    {
+        if (empty($variantsToUpdate)) {
+            return;
+        }
+
+        $columns = [
+            'in_stock',
+            'manage_stock',
+            'qty',
+            'price',
+            'special_price',
+            'special_price_type',
+            'special_price_start',
+            'special_price_end',
+            'selling_price',
+            'outlet_variation_id',
+        ];
+
+        $cases = array_fill_keys($columns, []);
+        $binds = array_fill_keys($columns, []);
+
+        $ids = [];
+
+        foreach ($variantsToUpdate as $variant) {
+            $id = (int) $variant['id'];
+            $ids[] = $id;
+
+            $sps = $variant['special_price_start'] ?? null;
+            if ($sps === '' || $sps === null) {
+                $sps = now()->format('Y-m-d');
+            } else {
+                try {
+                    $sps = \Carbon\Carbon::parse($sps)->format('Y-m-d');
+                } catch (\Throwable $e) {
+                    $sps = now()->format('Y-m-d');
+                }
+            }
+
+            $spe = $variant['special_price_end'] ?? null;
+            if ($spe === '' || $spe === null) {
+                $spe = null;
+            } else {
+                try {
+                    $spe = \Carbon\Carbon::parse($spe)->format('Y-m-d');
+                } catch (\Throwable $e) {
+                    $spe = null;
+                }
+            }
+
+            $cases['in_stock'][]              = "WHEN {$id} THEN ?";
+            $binds['in_stock'][]              = (int) ($variant['in_stock'] ?? 0);
+
+            $cases['manage_stock'][]          = "WHEN {$id} THEN ?";
+            $binds['manage_stock'][]          = (int) ($variant['manage_stock'] ?? 0);
+
+            $cases['qty'][]                   = "WHEN {$id} THEN ?";
+            $binds['qty'][]                   = (int) ($variant['qty'] ?? 0);
+
+            $cases['price'][]                 = "WHEN {$id} THEN ?";
+            $binds['price'][]                 = (float) ($variant['price'] ?? 0);
+
+            $cases['special_price'][]         = "WHEN {$id} THEN ?";
+            $binds['special_price'][]         = isset($variant['special_price']) ? (float) $variant['special_price'] : null;
+
+            $cases['special_price_type'][]    = "WHEN {$id} THEN ?";
+            $binds['special_price_type'][]    = $variant['special_price_type'] ?? 'fixed';
+
+            $cases['special_price_start'][]   = "WHEN {$id} THEN ?";
+            $binds['special_price_start'][]   = $sps;
+
+            $cases['special_price_end'][]     = "WHEN {$id} THEN ?";
+            $binds['special_price_end'][]     = $spe;
+
+            $cases['selling_price'][]         = "WHEN {$id} THEN ?";
+            $binds['selling_price'][]         = isset($variant['selling_price']) ? (float) $variant['selling_price'] : null;
+
+            $cases['outlet_variation_id'][]   = "WHEN {$id} THEN ?";
+            $binds['outlet_variation_id'][]   = $variant['outlet_variation_id'] ?? null;
+        }
+
+        $idsString = implode(',', $ids);
+
+        $sql = "UPDATE `product_variants` SET
+        `in_stock` = CASE `id` "              . implode(' ', $cases['in_stock']) . " END,
+        `manage_stock` = CASE `id` "          . implode(' ', $cases['manage_stock']) . " END,
+        `qty` = CASE `id` "                   . implode(' ', $cases['qty']) . " END,
+        `price` = CASE `id` "                 . implode(' ', $cases['price']) . " END,
+        `special_price` = CASE `id` "         . implode(' ', $cases['special_price']) . " END,
+        `special_price_type` = CASE `id` "    . implode(' ', $cases['special_price_type']) . " END,
+        `special_price_start` = CASE `id` "   . implode(' ', $cases['special_price_start']) . " END,
+        `special_price_end` = CASE `id` "     . implode(' ', $cases['special_price_end']) . " END,
+        `selling_price` = CASE `id` "         . implode(' ', $cases['selling_price']) . " END,
+        `outlet_variation_id` = CASE `id` "   . implode(' ', $cases['outlet_variation_id']) . " END,
+        `updated_at` = ?
+        WHERE `id` IN ({$idsString})";
+
+        $bindings = [];
+        foreach ($columns as $col) {
+            array_push($bindings, ...$binds[$col]);
+        }
+        $bindings[] = now();
+
+        DB::update($sql, $bindings);
+    }
+
+    private function updateProducts(array $productsToUpdate)
+    {
+        if (empty($productsToUpdate)) {
+            return;
+        }
+
+        $locale = 'en';
+        $productIds = [];
+
+        $productFields = [
+            'price', 'special_price', 'special_price_start', 'special_price_end',
+            'special_price_type', 'selling_price', 'in_stock', 'product_url', 'brand_id'
+        ];
+
+        $translationFields = ['name', 'description', 'short_description'];
+
+        $productCases = array_fill_keys($productFields, []);
+        $productBindings = array_fill_keys($productFields, []);
+
+        $translationCases = array_fill_keys($translationFields, []);
+        $translationBindings = array_fill_keys($translationFields, []);
+
+        foreach ($productsToUpdate as $product) {
+            $productId = (int) $product['id'];
+            $productIds[] = $productId;
+
+            foreach ($productFields as $field) {
+                $productCases[$field][] = "WHEN {$productId} THEN ?";
+                $productBindings[$field][] = $product[$field] ?? null;
+            }
+
+            foreach ($translationFields as $field) {
+                $translationCases[$field][] = "WHEN {$productId} THEN ?";
+                $translationBindings[$field][] = $product[$field] ?? null;
+            }
+        }
+
+        $idsString = implode(',', $productIds);
+
+        $flatProductBindings = [];
+        foreach ($productFields as $field) {
+            array_push($flatProductBindings, ...$productBindings[$field]);
+        }
+        $flatProductBindings[] = now();
+
+        $productSql = "UPDATE products SET
+    price = CASE id " . implode(' ', $productCases['price']) . " END,
+    special_price = CASE id " . implode(' ', $productCases['special_price']) . " END,
+    special_price_start = CASE id " . implode(' ', $productCases['special_price_start']) . " END,
+    special_price_end = CASE id " . implode(' ', $productCases['special_price_end']) . " END,
+    special_price_type = CASE id " . implode(' ', $productCases['special_price_type']) . " END,
+    selling_price = CASE id " . implode(' ', $productCases['selling_price']) . " END,
+    in_stock = CASE id " . implode(' ', $productCases['in_stock']) . " END,
+    product_url = CASE id " . implode(' ', $productCases['product_url']) . " END,
+    brand_id = CASE id " . implode(' ', $productCases['brand_id']) . " END,
+    updated_at = ?
+    WHERE id IN ({$idsString})";
+
+        DB::update($productSql, $flatProductBindings);
+
+        $flatTranslationBindings = [];
+        foreach ($translationFields as $field) {
+            array_push($flatTranslationBindings, ...$translationBindings[$field]);
+        }
+        $flatTranslationBindings[] = $locale;
+
+        $translationSql = "UPDATE product_translations SET
+    name = CASE product_id " . implode(' ', $translationCases['name']) . " END,
+    description = CASE product_id " . implode(' ', $translationCases['description']) . " END,
+    short_description = CASE product_id " . implode(' ', $translationCases['short_description']) . " END
+    WHERE product_id IN ({$idsString}) AND locale = ?";
+
+        DB::update($translationSql, $flatTranslationBindings);
     }
     private function getCategoryWithAllChildren($categoryId)
     {
@@ -1831,5 +2268,52 @@ class ScrapeOutlet46Products extends Command
         })->toArray();
 
         EntityFile::insert($insertData);
+    }
+
+    private function validateProductData(array $productData): bool
+    {
+        $requiredFields = ['name', 'sku', 'brand', 'categories', 'price'];
+
+        foreach ($requiredFields as $field) {
+            if (empty($productData[$field])) {
+                $this->error("Missing required field: {$field} for product SKU: " . ($productData['sku'] ?? 'unknown'));
+                Log::warning("Product validation failed", ['missing_field' => $field, 'sku' => $productData['sku'] ?? 'unknown']);
+                return false;
+            }
+        }
+
+        if (empty($productData['attributes']) && empty($productData['images']) && empty($productData['variants'])) {
+            $this->error("Product has no attributes or images: " . ($productData['sku'] ?? 'unknown'));
+            return false;
+        }
+
+        return true;
+    }
+
+    private function attachMissingVariantImages(array $variantsToUpdate, array $productData, &$existingFiles)
+    {
+        foreach ($variantsToUpdate as $variantUpdate) {
+            $variantId = $variantUpdate['id'];
+            $outletVariationId = $variantUpdate['outlet_variation_id'] ?? null;
+
+            if (!$outletVariationId) {
+                continue;
+            }
+
+            $existingImages = EntityFile::where('entity_type', 'Modules\Product\Entities\ProductVariant')
+                ->where('entity_id', $variantId)
+                ->where('zone', 'additional_images')
+                ->exists();
+
+            if ($existingImages) {
+                continue;
+            }
+
+            $variationData = $this->scrapeVariationDetails($outletVariationId);
+
+            if ($variationData && !empty($variationData['images'])) {
+                $this->attachVariationImages($variantId, $variationData['images'], $existingFiles);
+            }
+        }
     }
 }

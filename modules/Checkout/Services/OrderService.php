@@ -205,4 +205,40 @@ class OrderService
             $order->attachTax($cartTax);
         });
     }
+
+//    public function checkProductStock($products)
+//    {
+//        $productsOutStock = [];
+//        if ($products->isEmpty()) {
+//            return [];
+//        }
+//
+//        foreach ($products as $product) {
+//            $variantId = $product->product_variant->outlet_variation_id;
+//            $qty = $product->qty;
+//
+//            if($qty <= 5) {
+//                try {
+//                    $url = 'https://www.outlet46.de/rest/io/variations/' . $variantId . '?template=Ceres%3A%3AItem.SingleItem';
+//                    $res = Http::withHeaders([
+//                        'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+//                        'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+//                    ])->timeout(30)->retry(3, 1000)->get($url);
+//
+//                    if (!$res->ok()) {
+//                        return [];
+//                    }
+//                    $data = $res->json();
+//                    $stockNet = $data['data']['documents'][0]['data']['stock']['net'] ?? 0;
+//
+//                    if ($stockNet === 0 || $stockNet < $qty) {
+//                        $productsOutStock[] = $product->product->name;
+//                    }
+//                    return $productsOutStock;
+//                } catch (\Exception $e) {
+//                    return [];
+//                }
+//            }
+//        }
+//    }
 }
