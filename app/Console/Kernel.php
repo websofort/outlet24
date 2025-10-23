@@ -18,6 +18,9 @@ class Kernel extends ConsoleKernel
         Commands\ScrapeOutlet46Brands::class,
         Commands\ScrapeOutlet46Categories::class,
         Commands\ScrapeOutlet46Products::class,
+        Commands\UpdateProductQuantity::class,
+        Commands\ScrapeNewOutlet46Products::class,
+        Commands\UpdateOutlet46Products::class,
     ];
 
 
@@ -32,5 +35,13 @@ class Kernel extends ConsoleKernel
     {
         // $schedule->command('inspire')
         //          ->hourly();
+
+        $schedule->command('products:update-quantity')->twiceDaily(14, 21)
+        ->timezone('Europe/Skopje');
+        $schedule->command('scrape:update-products')->twiceDaily(14, 21)
+            ->timezone('Europe/Skopje');
+        $schedule->command('scrape:update-products')->dailyAt('20:00')
+            ->timezone('Europe/Skopje');
+
     }
 }

@@ -32,8 +32,8 @@ class ScrapeOutlet46Products extends Command
     public function handle()
     {
         $this->scrapeMenProductLinks();
-        $this->scrapeWomenProductLinks();
-        $this->scrapeKidsProductLinks();
+        /*$this->scrapeWomenProductLinks();
+        $this->scrapeKidsProductLinks();*/
 
         return self::SUCCESS;
     }
@@ -94,7 +94,7 @@ class ScrapeOutlet46Products extends Command
 
             sleep(2);
 
-        } while (!empty($links));
+        } while (!empty($links) && $page <= 1);
 
         return array_unique($allLinks);
     }
